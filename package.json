@@ -1,0 +1,9 @@
+{
+  "name": "state-sketcher-hackathon",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Deployment configuration for State Sketcher",
+  "dependencies": {
+    "@google/genai": "^1.20.0"
+  }
+}
