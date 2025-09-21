@@ -12,12 +12,12 @@ interface ResultsProps {
   isLastInChallenge: boolean;
 }
 
-// "New York" -> "/outlines/new-york.png"
+// Turn "New York" -> "/outlines/new-york.png"
 function fileForState(name: string) {
   const slug = name
     .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/(^-|-$)/g, "");
+    .replace(/[^a-z0-9]+/g, '-') // spaces/punct -> hyphen
+    .replace(/(^-|-$)/g, '');    // trim hyphens
   return `/outlines/${slug}.png`;
 }
 
@@ -28,8 +28,12 @@ const Results: React.FC<ResultsProps> = ({
   onNext,
   isLastInChallenge,
 }) => {
-  const pct = typeof score?.score === "number" ? score!.score : 0;
-  const critique = score?.critique ?? score?.explanation ?? "";
+  const getScoreColor = (s: number) => {
+    if (s >= 80) return 'text-green-400';
+    if (s >= 50) return 'text-yellow-400';
+    return 'text-red-400';
+  };
+
   const outlineSrc = fileForState(stateName);
 
   // simple inline styles to avoid Tailwind issues
@@ -45,46 +49,55 @@ const Results: React.FC<ResultsProps> = ({
   const btn: React.CSSProperties = { display: "inline-block", marginTop: 16, padding: "12px 18px", borderRadius: 12, fontWeight: 800, background: "#ef4444", color: "#fff", border: "none", cursor: "pointer", boxShadow: "0 12px 32px rgba(239,68,68,.35)" };
 
   return (
-    <div style={page}>
-      <div style={row}>
-        <h2 style={h2}>
-          Draw: <span style={{ color: "#ef4444" }}>{stateName}</span>
-        </h2>
-        <div style={{ textAlign: "center", opacity: 0.85 }}>Accuracy:</div>
-        <div style={pctStyle}>{pct}%</div>
-        {critique ? (
-          <div style={{ textAlign: "center", opacity: 0.7, fontStyle: "italic", maxWidth: 720, margin: "0 auto" }}>
-            “{critique}”
-          </div>
-        ) : null}
+    <div className="w-full flex flex-col items-center p-4 animate-fadeIn">
+      <h2 className="text-3xl font-bold mb-2">
+        Results for <span className="text-cyan-400">{stateName}</span>
+      </h2>
+
+      <div className="text-center mb-6">
+        <p className="text-lg">Accuracy:</p>
+        <p
+          className={`text-7xl font-bold ${getScoreColor(score.score)}`}
+          style={{ textShadow: '0 0 10px currentColor' }}
+        >
+          {score.score}%
+        </p>
+        {/* If your Score has "critique", show it; if you switched to "explanation", update this line */}
+        <p className="text-gray-400 italic mt-2 max-w-lg">"{(score as any).critique ?? (score as any).explanation ?? ''}"</p>
       </div>
 
-      <div style={row2}>
-        <div style={card}>
-          <div style={{ fontWeight: 700, opacity: 0.9, marginBottom: 8 }}>Your Drawing</div>
-          <div style={frame}>
-            <img src={userDrawing} alt="Your drawing" style={imgStyle} />
+      <div className="w-full max-w-5xl grid grid-cols-1 md:grid-cols-2 gap-6">
+        {/* Your Drawing */}
+        <div className="flex flex-col items-center p-4 bg-gray-800 rounded-lg border border-gray-700">
+          <h3 className="text-xl font-semibold mb-2">Your Drawing</h3>
+          <div className="w-full aspect-video bg-white rounded-md p-2">
+            <img src={userDrawing} alt="Your drawing" className="w-full h-full object-contain" />
           </div>
         </div>
 
-        <div style={card}>
-          <div style={{ fontWeight: 700, opacity: 0.9, marginBottom: 8 }}>Actual Outline</div>
-          <div style={frame}>
+        {/* Actual Outline (PNG) */}
+        <div className="flex flex-col items-center p-4 bg-gray-800 rounded-lg border border-gray-700">
+          <h3 className="text-xl font-semibold mb-2">Actual Outline</h3>
+          <div className="w-full aspect-video bg-white rounded-md p-2">
             <img
               src={outlineSrc}
               alt={`${stateName} outline`}
-              style={imgStyle}
+              className="w-full h-full object-contain"
               onError={(e) => {
-                (e.currentTarget as HTMLImageElement).src = "/outlines/_placeholder.png";
+                // optional fallback if a file is missing
+                (e.currentTarget as HTMLImageElement).src = '/outlines/_placeholder.png';
               }}
             />
           </div>
         </div>
       </div>
 
-      <div style={{ textAlign: "center" }}>
-        <button style={btn} onClick={onNext}>
-          {isLastInChallenge ? "Finish Challenge" : "Next State!"}
+      <div className="mt-8">
+        <button
+          onClick={onNext}
+          className="px-10 py-4 bg-cyan-600 text-white font-bold text-xl rounded-lg hover:bg-cyan-500 transition-colors duration-200 shadow-lg"
+        >
+          {isLastInChallenge ? 'Finish Challenge' : 'Next State'}
         </button>
       </div>
     </div>
