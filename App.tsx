@@ -8,7 +8,6 @@ import Drawing from './components/Drawing';
 import Results from './components/Results';
 import StateSelectionModal from './components/StateSelectionModal';
 import { judgeDrawing } from './services/geminiService';
-// ❌ remove: import { StateOutlines } from './assets/StateOutlines';
 
 const App: React.FC = () => {
   const [gameStatus, setGameStatus] = useState<GameStatus>(GameStatus.Welcome);
@@ -60,7 +59,8 @@ const App: React.FC = () => {
       setGameStatus(GameStatus.Results);
     } catch (err) {
       console.error(err);
-      const errorMessage = err instanceof Error ? err.message : 'Could not get score from AI. Please try again.';
+      const errorMessage =
+        err instanceof Error ? err.message : 'Could not get score from AI. Please try again.';
       setError(errorMessage);
       setGameStatus(GameStatus.Drawing);
     }
@@ -106,7 +106,11 @@ const App: React.FC = () => {
               onSubmit={handleSubmission}
               isJudging={gameStatus === GameStatus.Judging}
               error={error}
-              challengeProgress={gameMode === GameMode.Challenge ? { current: currentChallengeIndex + 1, total: challengeStates.length } : undefined}
+              challengeProgress={
+                gameMode === GameMode.Challenge
+                  ? { current: currentChallengeIndex + 1, total: challengeStates.length }
+                  : undefined
+              }
             />
           );
         }
@@ -119,7 +123,10 @@ const App: React.FC = () => {
               userDrawing={lastDrawing}
               score={score}
               onNext={handleNextState}
-              isLastInChallenge={gameMode === GameMode.Challenge && currentChallengeIndex === challengeStates.length - 1}
+              isLastInChallenge={
+                gameMode === GameMode.Challenge &&
+                currentChallengeIndex === challengeStates.length - 1
+              }
             />
           );
         }
@@ -130,12 +137,26 @@ const App: React.FC = () => {
     }
   };
 
+  const isWelcome = gameStatus === GameStatus.Welcome;
+
   return (
-    <div className="min-h-screen bg-gray-900 text-gray-100 flex flex-col items-center p-4 font-sans">
-      <Header onSelectMode={startNewGame} onHomeClick={resetToHome} />
-      <main className="w-full max-w-5xl flex-grow flex flex-col items-center justify-center mt-8">
+    <div className="min-h-screen bg-gray-900 text-gray-100 flex flex-col font-sans">
+      {/* Hide header on Welcome page */}
+      {!isWelcome && (
+        <Header onSelectMode={startNewGame} onHomeClick={resetToHome} />
+      )}
+
+      {/* Center the welcome content; constrain others to max width */}
+      <main
+        className={
+          isWelcome
+            ? 'flex-1 flex items-center justify-center px-4'
+            : 'w-full max-w-5xl mx-auto flex-1 flex flex-col items-center justify-center mt-8 px-4'
+        }
+      >
         {renderContent()}
       </main>
+
       <StateSelectionModal
         isOpen={isModalOpen}
         onClose={() => setIsModalOpen(false)}

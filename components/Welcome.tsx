@@ -1,32 +1,45 @@
+// Welcome.tsx
+import React from "react";
+import { GameMode } from "../constants";
 
-import React from 'react';
-import { GameMode } from '../constants';
+type Props = { onStart: (mode: GameMode) => void };
 
-interface WelcomeProps {
-    onStart: (mode: GameMode) => void;
-}
-
-const Welcome: React.FC<WelcomeProps> = ({ onStart }) => {
+const Welcome: React.FC<Props> = ({ onStart }) => {
   return (
-    <div className="text-center p-8 bg-gray-800/50 rounded-xl shadow-lg border border-gray-700 animate-fadeIn">
-      <h2 className="text-4xl font-bold mb-4 text-cyan-400">Welcome to StateSketchr!</h2>
-      <p className="text-lg text-gray-300 mb-8 max-w-md mx-auto">
-        Test your geographical knowledge. Draw a US state from memory and see how well you did.
-      </p>
-      <div className="flex flex-col sm:flex-row justify-center items-center gap-4">
-         <button onClick={() => onStart(GameMode.Choose)} className="w-full sm:w-auto px-6 py-3 rounded-md bg-gray-700 hover:bg-cyan-600 transition-colors duration-200 text-lg">
+    <section className="w-full max-w-5xl mx-auto">
+      <div className="bg-slate-800/60 border border-slate-700 rounded-2xl shadow-2xl p-8 md:p-12 text-center">
+        <h1 className="text-4xl md:text-5xl font-extrabold text-cyan-300">
+          Welcome to StateSketchr!
+        </h1>
+        <p className="mt-4 text-lg md:text-xl text-slate-200">
+          The game where you draw each U.S. State from memory! You have one minute to draw the best state outline you can, and then compare your art to the real thing
+        </p>
+
+        <div className="mt-8 grid grid-cols-1 sm:grid-cols-3 gap-4">
+          <button
+            onClick={() => onStart(GameMode.Choose)}
+            className="px-6 py-4 rounded-lg bg-slate-700 hover:bg-slate-600 text-white font-semibold"
+          >
             Choose a State
           </button>
-          <button onClick={() => onStart(GameMode.Random)} className="w-full sm:w-auto px-6 py-3 rounded-md bg-gray-700 hover:bg-cyan-600 transition-colors duration-200 text-lg">
+
+          <button
+            onClick={() => onStart(GameMode.Random)}
+            className="px-6 py-4 rounded-lg bg-slate-700 hover:bg-slate-600 text-white font-semibold"
+          >
             Random State
           </button>
-          <button onClick={() => onStart(GameMode.Challenge)} className="w-full sm:w-auto px-6 py-3 rounded-md bg-orange-600 hover:bg-orange-500 transition-colors duration-200 font-semibold text-lg">
+
+          <button
+            onClick={() => onStart(GameMode.Challenge)}
+            className="px-6 py-4 rounded-lg bg-orange-600 hover:bg-orange-500 text-white font-semibold"
+          >
             Start 50 State Challenge
           </button>
+        </div>
       </div>
-    </div>
+    </section>
   );
 };
 
-// Fix: Add missing default export.
 export default Welcome;
