@@ -1,4 +1,4 @@
-// /api/judge.ts  (Edge Function)
+// /api/judge.ts (Edge Function)
 export const config = { runtime: 'edge' };
 
 function json(body: unknown, status = 200) {
@@ -12,12 +12,11 @@ export default async function handler(req: Request) {
   try {
     if (req.method !== 'POST') return json({ error: 'Method not allowed' }, 405);
 
-    // Parse body
+    // ---- parse request body ----
     let body: any;
     try { body = await req.json(); }
     catch { return json({ error: 'Invalid JSON body' }, 400); }
 
-    // Accept either name for the image field
     const { imageDataUrl, drawingDataUrl, stateName } = body || {};
     const img = imageDataUrl || drawingDataUrl;
     if (!img || !stateName) return json({ error: 'Missing imageDataUrl or stateName' }, 400);
@@ -25,20 +24,20 @@ export default async function handler(req: Request) {
     const apiKey = process.env.GEMINI_API_KEY;
     if (!apiKey) return json({ error: 'Server misconfigured: GEMINI_API_KEY missing' }, 500);
 
-    // strip data URL prefix if present
+    // strip "data:image/png;base64,..." prefix if present
     const base64 = img.includes(',') ? img.split(',')[1] : img;
 
-    // Tight rubric; JSON-only
+    // ---- prompt / rubric ----
     const rubric = `
 Grade how closely the user's black-on-white line drawing matches the US state: ${stateName}.
 Rules:
 - Score is an integer 0–100 (100 = excellent match).
-- Consider outline shape, angles, aspect ratio, and orientation.
-- Ignore small wobbles; reward correct silhouette even if not perfectly neat.
+- Consider overall outline shape, angles, aspect ratio, and orientation.
+- Ignore small wobbles; reward a correct silhouette even if not perfectly neat.
 - Rectangle-ish states (Colorado, Wyoming): correct rectangle with right orientation ≳ 85.
 Return ONLY strict JSON: {"score": number, "explanation": string}. No extra text.`;
 
-    // IMPORTANT: use snake_case keys in REST
+    // ---- call Gemini (REST) ----
     const upstream = await fetch(
       'https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-pro:generateContent?key=' + apiKey,
       {
@@ -54,37 +53,56 @@ Return ONLY strict JSON: {"score": number, "explanation": string}. No extra text
               ]
             }
           ],
-          generation_config: {
+          // IMPORTANT: camelCase for REST
+          generationConfig: {
             temperature: 0.2,
-            top_p: 0.1,
-            top_k: 32,
-            response_mime_type: 'application/json'
+            topP: 0.1,
+            topK: 32,
+            responseMimeType: 'application/json'
           }
         })
       }
     );
 
     const ct = upstream.headers.get('content-type') || '';
-    const raw = await upstream.text(); // read once
+    const rawEnvelope = await upstream.text(); // read once
+
     if (!ct.includes('application/json')) {
-      return json({ error: 'Upstream non-JSON', status: upstream.status, body: raw.slice(0, 200) }, upstream.status || 502);
+      return json({ error: 'Upstream non-JSON', status: upstream.status, body: rawEnvelope.slice(0, 400) }, upstream.status || 502);
     }
 
-    let data: any = {};
-    try { data = JSON.parse(raw); }
-    catch { return json({ error: 'Failed to parse upstream JSON', body: raw.slice(0, 200) }, 502); }
+    let envelope: any = {};
+    try { envelope = JSON.parse(rawEnvelope); }
+    catch { return json({ error: 'Failed to parse upstream JSON', body: rawEnvelope.slice(0, 400) }, 502); }
 
-    // Extract the model's JSON string from candidate parts
-    const parts = data?.candidates?.[0]?.content?.parts ?? [];
-    const modelText = parts.map((p: any) => p?.text || '').join('');
+    // safety block?
+    const block = envelope?.promptFeedback?.blockReason || envelope?.prompt_feedback?.block_reason;
+    if (block) return json({ score: 0, explanation: `Model blocked: ${block}` });
 
+    // ---- extract model JSON text robustly ----
+    const candidates = envelope?.candidates ?? [];
+    const parts = candidates[0]?.content?.parts ?? [];
+
+    let modelText = '';
+    for (const p of parts) {
+      if (typeof p?.text === 'string') modelText += p.text;
+      if (p?.json && typeof p.json === 'object') modelText += JSON.stringify(p.json);
+    }
+
+    // fallback: try to find the first {...} anywhere in the envelope string
+    if (!modelText) {
+      const m = rawEnvelope.match(/\{[\s\S]*\}/);
+      if (m) modelText = m[0];
+    }
+
+    // ---- parse the JSON payload ----
     let parsed: any;
     try {
       parsed = JSON.parse(modelText);
     } catch {
-      const m = modelText.match(/\{[\s\S]*\}/);
-      if (m) {
-        try { parsed = JSON.parse(m[0]); } catch { /* ignore */ }
+      const m2 = modelText.match(/\{[\s\S]*\}/);
+      if (m2) {
+        try { parsed = JSON.parse(m2[0]); } catch { /* ignore */ }
       }
     }
 
