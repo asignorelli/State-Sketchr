@@ -10,10 +10,9 @@ function json(body: unknown, status = 200) {
 
 export default async function handler(req: Request) {
   try {
-    if (req.method !== 'POST') {
-      return json({ error: 'Method not allowed' }, 405);
-    }
+    if (req.method !== 'POST') return json({ error: 'Method not allowed' }, 405);
 
+    // Parse body safely
     let body: any;
     try {
       body = await req.json();
@@ -21,49 +20,68 @@ export default async function handler(req: Request) {
       return json({ error: 'Invalid JSON body' }, 400);
     }
 
-    const { imageDataUrl, stateName } = body || {};
-    if (!imageDataUrl || !stateName) {
+    // Accept both names for the image field
+    const { imageDataUrl, drawingDataUrl, stateName } = body || {};
+    const img = imageDataUrl || drawingDataUrl;
+    if (!img || !stateName) {
       return json({ error: 'Missing imageDataUrl or stateName' }, 400);
     }
 
     const apiKey = process.env.GEMINI_API_KEY;
-    if (!apiKey) {
-      return json({ error: 'Server misconfigured: GEMINI_API_KEY missing' }, 500);
-    }
+    if (!apiKey) return json({ error: 'Server misconfigured: GEMINI_API_KEY missing' }, 500);
 
     // Accept "data:image/png;base64,..." or raw base64
-    const base64 = imageDataUrl.includes(',') ? imageDataUrl.split(',')[1] : imageDataUrl;
+    const base64 = img.includes(',') ? img.split(',')[1] : img;
 
-    const prompt = `You are grading how closely the user's drawing matches the outline of ${stateName}.
-Return ONLY strict JSON: {"score": number, "explanation": string}. Score is 0–100.`;
+    // Tight rubric + JSON mode for stable, parseable output
+    const rubric = `
+Grade how closely the user's black-on-white line drawing matches the US state: ${stateName}.
+Rules:
+- Score is an integer 0–100 (100 = excellent match).
+- Consider overall outline shape, angles, aspect ratio, and orientation.
+- Ignore small wobbles; reward a correct silhouette even if lines aren't perfectly straight.
+- For rectangle-like states (e.g., Colorado, Wyoming), a correctly oriented rectangle with roughly correct proportions should score ≥85.
+Return ONLY strict JSON: {"score": number, "explanation": string}. No extra text.`;
 
+    // Use the higher-quality model for better judging; JSON mode enabled
     const upstream = await fetch(
-      'https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=' + apiKey,
+      'https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-pro:generateContent?key=' + apiKey,
       {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
           contents: [
-            {
-              parts: [
-                { text: prompt },
-                { inline_data: { mime_type: 'image/png', data: base64 } }
-              ]
-            }
-          ]
+            { parts: [{ text: rubric }] },
+            { parts: [{ inline_data: { mime_type: 'image/png', data: base64 } }] }
+          ],
+          generationConfig: {
+            temperature: 0.2,
+            topP: 0.1,
+            topK: 32,
+            responseMimeType: 'application/json'
+          }
         })
       }
     );
 
+    // Ensure upstream is JSON
     const ct = upstream.headers.get('content-type') || '';
+    const rawBody = await upstream.text(); // read once
     if (!ct.includes('application/json')) {
-      const text = await upstream.text().catch(() => '');
-      return json({ error: 'Upstream non-JSON', status: upstream.status, body: text.slice(0, 200) }, upstream.status || 502);
+      return json(
+        { error: 'Upstream non-JSON', status: upstream.status, body: rawBody.slice(0, 200) },
+        upstream.status || 502
+      );
     }
 
-    const data = await upstream.json();
+    let data: any = {};
+    try {
+      data = JSON.parse(rawBody);
+    } catch {
+      return json({ error: 'Failed to parse upstream JSON', body: rawBody.slice(0, 200) }, 502);
+    }
 
-    // Pull candidate text and parse JSON
+    // Pull model text and parse JSON payload
     const parts = data?.candidates?.[0]?.content?.parts ?? [];
     const modelText = parts.map((p: any) => p?.text || '').join('');
     let parsed: any;
@@ -71,7 +89,9 @@ Return ONLY strict JSON: {"score": number, "explanation": string}. Score is 0–
       parsed = JSON.parse(modelText);
     } catch {
       const m = modelText.match(/\{[\s\S]*\}/);
-      if (m) parsed = JSON.parse(m[0]);
+      if (m) {
+        try { parsed = JSON.parse(m[0]); } catch { /* fall through */ }
+      }
     }
 
     if (!parsed || typeof parsed.score !== 'number') {
