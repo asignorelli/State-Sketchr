@@ -19,8 +19,37 @@ const DEFAULT_OPTS: Required<CompareOpts> = {
   angles: [-10, -6, -3, 0, 3, 6, 10],
   drawThresh: 170,
   outlineLumThresh: 110,
-  // default tolerance in pixels for matching edges. Lower = stricter.
-  tolerancePx: 0.75,
+    // default tolerance in pixels for matching edges. Lower = stricter.
+    tolerancePx: 1.5,
+};
+
+// Per-state tuning overrides to handle simple shapes like rectangles specially.
+type StateOverride = {
+  tolerancePx?: number;        // override tolerance
+  lengthRampStart?: number;    // ratio at which lengthPenalty starts to ramp
+  lengthRampWidth?: number;    // width of ramp (value that maps to full 1.0)
+  minAcceptRatio?: number;     // final accept ratio guard
+  scoreMultiplier?: number;    // final score multiplier for this state
+  minUserEdgePixels?: number;  // lower minimum-ink guard for small states
+};
+
+const STATE_OVERRIDES: Record<string, StateOverride> = {
+  Colorado: {
+    tolerancePx: 5,
+    lengthRampStart: 0.06,
+    lengthRampWidth: 0.69, // end ~0.75
+    minAcceptRatio: 0.005,
+    scoreMultiplier: 1.25,
+    minUserEdgePixels: 100,
+  },
+  Wyoming: {
+    tolerancePx: 5,
+    lengthRampStart: 0.06,
+    lengthRampWidth: 0.69,
+    minAcceptRatio: 0.005,
+    scoreMultiplier: 1.25,
+    minUserEdgePixels: 100,
+  },
 };
 
 function fBeta(precision: number, recall: number, beta: number) {
@@ -187,7 +216,7 @@ export async function judgeDrawing(
     angles: [-10, -6, -3, 0, 3, 6, 10],
     drawThresh: 170,
     outlineLumThresh: 110,
-    tolerancePx: 1,
+    tolerancePx: 3.0,
   };
   const cfg: Required<CompareOpts> = { ...DEFAULTS, ...opts };
   const { size, angles, drawThresh, outlineLumThresh, tolerancePx } = cfg;
@@ -230,13 +259,12 @@ export async function judgeDrawing(
   const outlineMask = maskFromImageData(outlineID, outlineLumThresh);
   const outlineEdge = edgeFromMask(outlineMask, size, size);
   const outlineEdgeCount = count(outlineEdge);
+  const outlineMaskCount = count(outlineMask);
 
   // State-specific tolerance (rectangle states get a tiny bit more slack)
   const baseTol = tolerancePx;
-  const tol =
-    stateName === 'Colorado' || stateName === 'Wyoming'
-      ? Math.max(2, baseTol)
-      : baseTol;
+  const override = STATE_OVERRIDES[stateName as string] || {};
+  const tol = override.tolerancePx ?? baseTol;
 
   let best: { score: number; precision: number; recall: number; ratio?: number } = { score: 0, precision: 0, recall: 0 };
 
@@ -244,11 +272,14 @@ export async function judgeDrawing(
   // This avoids unnecessary work and prevents empty/near-empty canvases from
   // ever entering the rotation/precision loop where tiny artifacts might
   // otherwise produce a non-zero score.
-  const MIN_USER_EDGE_PIXELS = Math.max(150, Math.round(size * 0.5));
+  // Lower the minimum required edge pixels so reasonable drawings aren't rejected.
+  // For a 512 canvas, require at least ~10 pixels by default (override via STATE_OVERRIDES).
+  const MIN_USER_EDGE_PIXELS = override.minUserEdgePixels ?? Math.max(10, Math.round(size * 0.005));
   const baseUserID = rasterize(userImg, size, 0);
   const baseUserMask = maskFromImageData(baseUserID, drawThresh);
   const baseUserEdge = edgeFromMask(baseUserMask, size, size);
   const baseUserEdgeCount = count(baseUserEdge);
+  const baseUserMaskCount = count(baseUserMask);
   if (baseUserEdgeCount < MIN_USER_EDGE_PIXELS) {
     return {
       score: 0,
@@ -256,7 +287,7 @@ export async function judgeDrawing(
         "We couldn’t detect enough drawing near the border. Try thicker, darker lines and trace along the edge.",
       precision: 0,
       recall: 0,
-      ratio: baseUserEdgeCount / Math.max(1, outlineEdgeCount),
+      ratio: baseUserMaskCount / Math.max(1, outlineMaskCount),
     } as Score;
   }
 
@@ -277,17 +308,51 @@ export async function judgeDrawing(
     // Edge-to-edge precision/recall with distance transform tolerance
     const { precision, recall } = precisionRecall(userEdge, outlineEdge, size, size, tol);
 
-  // Balanced F1 score (precision & recall equally important)
-  const base = fBeta(precision, recall, 1); // F1
+    // --- compute mask IoU and area counts ---
+    const userMaskCount = count(userMask);
+    let intersectMaskCount = 0;
+    for (let i = 0; i < userMask.length; i++) if (userMask[i] && outlineMask[i]) intersectMaskCount++;
+    const unionMaskCount = userMaskCount + outlineMaskCount - intersectMaskCount;
+    const iou = unionMaskCount ? intersectMaskCount / unionMaskCount : 0;
 
-  // Length penalty: require more of the outline length to get credit.
-  // Ramp from 0.2→0.9 (ratio): below 20% -> 0, at 90% -> 1
-  const ratio = userEdgeCount / Math.max(1, outlineEdgeCount);
-  const lengthPenalty = Math.min(1, Math.max(0, (ratio - 0.2) / 0.7)); // 0→1 as ratio 0.2→0.9
+      // Combine IoU and recall to prioritize closeness/coverage (lenient),
+      // then apply a clutter multiplier to deduct points for extra stray strokes.
+    // IoU captures area overlap; recall measures outline coverage.
+  // Make IoU overwhelmingly dominant so area overlap is the primary signal.
+  let baseOverlap = 0.95 * iou + 0.05 * recall;
+  // Stronger positive bump for good IoU
+  if (iou > 0.5) baseOverlap = Math.min(1, baseOverlap + 0.1);
 
-  const score = Math.round(100 * base * lengthPenalty);
-  const r = userEdgeCount / Math.max(1, outlineEdgeCount);
-  if (score > best.score) best = { score, precision, recall, ratio: r };
+    // Clutter detection: lower precision (= many off-outline strokes) reduces score.
+    // Also penalize when the user's filled area is much larger than the outline.
+    const areaRatio = outlineMaskCount ? userMaskCount / outlineMaskCount : 1;
+    // areaPenalty reduces linearly once user area exceeds outline area, clamped.
+    const areaPenalty = areaRatio <= 1 ? 1 : Math.max(0.3, 1 - 0.5 * (areaRatio - 1));
+
+  // Combine precision and areaPenalty into a minor clutter multiplier in [0.8..1].
+  // Make penalty small: precision has a small effect and area overfill only lightly reduces score.
+  // Remove clutter penalty entirely for now to be generous: keep multiplier = 1.
+  const clutterMultiplier = 1;
+
+    const base = baseOverlap * clutterMultiplier;
+
+  // Length penalty: favor coverage but make the ramp more generous and provide a
+  // minimum floor so reasonable but slightly-short drawings still receive a score.
+  // Use mask-area ratio (userMaskCount / outlineMaskCount) for robustness to stroke thickness.
+  const maskRatio = (typeof userMaskCount !== 'undefined') ? userMaskCount / Math.max(1, outlineMaskCount) : userEdgeCount / Math.max(1, outlineEdgeCount);
+  const rampStart = override.lengthRampStart ?? 0.06; // even earlier start -> more forgiving
+  const rampWidth = override.lengthRampWidth ?? 0.55;
+  const rawLength = (maskRatio - rampStart) / rampWidth;
+  const lengthPenaltyUnclamped = Math.min(1, Math.max(0, rawLength));
+  // Stronger floor: give most reasonable sketches a high score even if slightly short.
+  const lengthPenalty = Math.max(0.9, lengthPenaltyUnclamped);
+
+    const score = Math.round(100 * base * lengthPenalty);
+    const r = maskRatio; // return mask-based coverage ratio consistently
+  // apply optional per-state score multiplier
+  const multiplier = override.scoreMultiplier ?? 1;
+  const finalScore = Math.round(score * multiplier);
+  if (finalScore > best.score) best = { score: finalScore, precision, recall, ratio: r };
   }
 
   if (best.score === 0) {
@@ -303,7 +368,8 @@ export async function judgeDrawing(
 
   // FINAL SANITY GUARD: if the user's total edge length is tiny relative to the outline
   // (e.g., an almost-empty canvas that snuck past earlier checks), treat as no drawing.
-  const MIN_ACCEPT_RATIO = 0.02; // require at least 2% of outline edge length
+  // Make this more permissive by default; per-state overrides can still be stricter/looser.
+  const MIN_ACCEPT_RATIO = override.minAcceptRatio ?? 0.001;
   const bestRatio = (best as any).ratio || 0;
   if (bestRatio < MIN_ACCEPT_RATIO) {
     return {
