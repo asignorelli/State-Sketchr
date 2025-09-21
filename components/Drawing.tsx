@@ -1,195 +1,240 @@
-import React, { useRef, useEffect, useState, useCallback } from 'react';
-import type { StateName, ChallengeProgress } from '../types';
-import { ClockIcon } from './icons/ClockIcon';
+import React, { useEffect, useRef, useState, useCallback } from 'react';
+import type { StateName } from '../types';
 
-interface DrawingProps {
+type Props = {
   stateName: StateName;
   onSubmit: (dataUrl: string) => void;
-  isJudging: boolean;
-  error: string | null;
-  challengeProgress?: ChallengeProgress;
-}
-
-const DRAW_TIME_SECONDS = 60;
-
-const JudgingLoader: React.FC = () => {
-    const messages = [
-        "Analyzing your artistic flair...",
-        "Consulting the geography experts...",
-        "Calculating the wibbly-wobbliness...",
-        "Comparing to satellite images...",
-        "Just a moment more...",
-    ];
-    const [messageIndex, setMessageIndex] = useState(0);
-
-    useEffect(() => {
-        const interval = setInterval(() => {
-            setMessageIndex((prev) => (prev + 1) % messages.length);
-        }, 2500);
-        return () => clearInterval(interval);
-    }, [messages.length]);
-
-    return (
-        <div className="absolute inset-0 bg-black/80 flex flex-col items-center justify-center backdrop-blur-sm">
-            <div className="w-16 h-16 border-4 border-t-4 border-t-cyan-400 border-gray-600 rounded-full animate-spin"></div>
-            <p className="mt-4 text-xl font-semibold text-gray-200 transition-opacity duration-500">
-                {messages[messageIndex]}
-            </p>
-        </div>
-    );
+  isJudging?: boolean;
+  error?: string | null;
+  challengeProgress?: { current: number; total: number };
 };
 
+// A point stored as normalized coords (0..1) so we can resize and redraw cleanly
+type NPoint = { x: number; y: number };
+type Stroke = NPoint[];
 
-const Drawing: React.FC<DrawingProps> = ({ stateName, onSubmit, isJudging, error, challengeProgress }) => {
+const LINE_WIDTH = 4;        // px (logical, before devicePixelRatio scaling)
+const LINE_CAP: CanvasLineCap = 'round';
+const LINE_JOIN: CanvasLineJoin = 'round';
+const INK_COLOR = '#000000';
+
+const Drawing: React.FC<Props> = ({
+  stateName,
+  onSubmit,
+  isJudging = false,
+  error,
+  challengeProgress
+}) => {
+  const wrapperRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const isDrawing = useRef(false);
-  const [timer, setTimer] = useState(DRAW_TIME_SECONDS);
-  const [timerActive, setTimerActive] = useState(false);
+  const [strokes, setStrokes] = useState<Stroke[]>([]);
+  const [current, setCurrent] = useState<Stroke | null>(null);
 
-  const getCanvasContext = () => {
+  // Resize canvas to wrapper while preserving content (we redraw from strokes)
+  const fitCanvas = useCallback(() => {
     const canvas = canvasRef.current;
-    return canvas ? canvas.getContext('2d') : null;
+    const wrapper = wrapperRef.current;
+    if (!canvas || !wrapper) return;
+
+    const rect = wrapper.getBoundingClientRect();
+    const cssW = Math.max(300, Math.floor(rect.width));
+    const cssH = Math.max(240, Math.floor(rect.height));
+
+    const dpr = window.devicePixelRatio || 1;
+    canvas.width = Math.floor(cssW * dpr);
+    canvas.height = Math.floor(cssH * dpr);
+    canvas.style.width = cssW + 'px';
+    canvas.style.height = cssH + 'px';
+
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+    // White background
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, cssW, cssH);
+
+    // Redraw all strokes
+    drawAll(strokes, ctx, cssW, cssH);
+  }, [strokes]);
+
+  useEffect(() => {
+    fitCanvas();
+    const onResize = () => fitCanvas();
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, [fitCanvas]);
+
+  // Helpers to convert normalized point to canvas pixels
+  const n2p = (pt: NPoint, w: number, h: number) => ({ x: pt.x * w, y: pt.y * h });
+
+  const drawStroke = (s: Stroke, ctx: CanvasRenderingContext2D, w: number, h: number) => {
+    if (s.length === 0) return;
+    ctx.strokeStyle = INK_COLOR;
+    ctx.lineWidth = LINE_WIDTH;
+    ctx.lineCap = LINE_CAP;
+    ctx.lineJoin = LINE_JOIN;
+    ctx.beginPath();
+    const p0 = n2p(s[0], w, h);
+    ctx.moveTo(p0.x, p0.y);
+    for (let i = 1; i < s.length; i++) {
+      const p = n2p(s[i], w, h);
+      ctx.lineTo(p.x, p.y);
+    }
+    ctx.stroke();
   };
 
-  const clearCanvas = useCallback(() => {
-    const context = getCanvasContext();
-    const canvas = canvasRef.current;
-    if(context && canvas) {
-        context.fillStyle = 'white';
-        context.fillRect(0, 0, canvas.width, canvas.height);
-    }
-  }, []);
+  const drawAll = (all: Stroke[], ctx: CanvasRenderingContext2D, w: number, h: number) => {
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, w, h);
+    for (const s of all) drawStroke(s, ctx, w, h);
+  };
 
-  useEffect(() => {
-    clearCanvas();
-    setTimer(DRAW_TIME_SECONDS);
-    setTimerActive(false);
-  }, [stateName, clearCanvas]);
-
-  useEffect(() => {
-    let interval: NodeJS.Timeout | null = null;
-    if (timerActive && timer > 0) {
-      interval = setInterval(() => {
-        setTimer((prev) => prev - 1);
-      }, 1000);
-    } else if (timer === 0) {
-      handleSubmit();
-    }
-    return () => {
-      if(interval) clearInterval(interval);
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [timerActive, timer]);
-  
-  const getCoords = (event: React.MouseEvent | React.TouchEvent) => {
-    const canvas = canvasRef.current;
-    if (!canvas) return { x: 0, y: 0 };
-
+  // pointer helpers
+  const getNorm = (ev: React.PointerEvent<HTMLCanvasElement>) => {
+    const canvas = canvasRef.current!;
     const rect = canvas.getBoundingClientRect();
-    
-    const clientX = 'touches' in event.nativeEvent
-      ? event.nativeEvent.touches[0].clientX
-      : (event as React.MouseEvent).nativeEvent.clientX;
-    const clientY = 'touches' in event.nativeEvent
-      ? event.nativeEvent.touches[0].clientY
-      : (event as React.MouseEvent).nativeEvent.clientY;
-
-    const scaleX = canvas.width / rect.width;
-    const scaleY = canvas.height / rect.height;
-
-    const x = (clientX - rect.left) * scaleX;
-    const y = (clientY - rect.top) * scaleY;
-    
-    return { x, y };
+    const x = (ev.clientX - rect.left) / rect.width;
+    const y = (ev.clientY - rect.top) / rect.height;
+    return { x: Math.max(0, Math.min(1, x)), y: Math.max(0, Math.min(1, y)) };
   };
 
-  const startDrawing = (event: React.MouseEvent | React.TouchEvent) => {
+  const onPointerDown = (ev: React.PointerEvent<HTMLCanvasElement>) => {
     if (isJudging) return;
-    const context = getCanvasContext();
-    if (!context) return;
-    
-    if (!timerActive) setTimerActive(true);
-
-    const { x, y } = getCoords(event);
-    context.beginPath();
-    context.moveTo(x, y);
-    isDrawing.current = true;
+    (ev.target as Element).setPointerCapture(ev.pointerId);
+    const start = getNorm(ev);
+    setCurrent([start]);
   };
 
-  const draw = (event: React.MouseEvent | React.TouchEvent) => {
-    if (!isDrawing.current || isJudging) return;
-    const context = getCanvasContext();
-    if (!context) return;
-    
-    const { x, y } = getCoords(event);
-    context.lineTo(x, y);
-    context.strokeStyle = 'black';
-    context.lineWidth = 4;
-    context.lineCap = 'round';
-    context.lineJoin = 'round';
-    context.stroke();
+  const onPointerMove = (ev: React.PointerEvent<HTMLCanvasElement>) => {
+    if (!current) return;
+    const next = getNorm(ev);
+    // avoid adding tons of identical points
+    const last = current[current.length - 1];
+    if (last && Math.hypot(next.x - last.x, next.y - last.y) < 0.001) return;
+    const updated = [...current, next];
+    setCurrent(updated);
+
+    // incremental draw for responsiveness
+    const canvas = canvasRef.current!;
+    const ctx = canvas.getContext('2d')!;
+    const w = canvas.clientWidth;
+    const h = canvas.clientHeight;
+    // redraw everything + the in-progress stroke
+    drawAll(strokes, ctx, w, h);
+    drawStroke(updated, ctx, w, h);
   };
 
-  const stopDrawing = () => {
-    const context = getCanvasContext();
-    if (!context) return;
-    context.closePath();
-    isDrawing.current = false;
+  const endStroke = () => {
+    if (!current) return;
+    setStrokes((prev) => [...prev, current]);
+    setCurrent(null);
+
+    // final redraw
+    const canvas = canvasRef.current!;
+    const ctx = canvas.getContext('2d')!;
+    const w = canvas.clientWidth;
+    const h = canvas.clientHeight;
+    drawAll([...strokes, current], ctx, w, h);
   };
-  
-  const handleSubmit = () => {
-      const canvas = canvasRef.current;
-      if (canvas && !isJudging) {
-          onSubmit(canvas.toDataURL('image/png'));
-      }
+
+  const onPointerUp = () => endStroke();
+  const onPointerCancel = () => endStroke();
+  const onPointerLeave = () => endStroke();
+
+  // Undo & Clear
+  const handleUndo = () => {
+    if (strokes.length === 0) return;
+    const next = strokes.slice(0, -1);
+    setStrokes(next);
+    const canvas = canvasRef.current!;
+    const ctx = canvas.getContext('2d')!;
+    drawAll(next, ctx, canvas.clientWidth, canvas.clientHeight);
+  };
+
+  const handleClear = () => {
+    setStrokes([]);
+    const canvas = canvasRef.current!;
+    const ctx = canvas.getContext('2d')!;
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, canvas.clientWidth, canvas.clientHeight);
+  };
+
+  // Keyboard shortcuts: Z = undo, C = clear
+  useEffect(() => {
+    const h = (e: KeyboardEvent) => {
+      if (isJudging) return;
+      if (e.key.toLowerCase() === 'z') handleUndo();
+      if (e.key.toLowerCase() === 'c') handleClear();
+    };
+    window.addEventListener('keydown', h);
+    return () => window.removeEventListener('keydown', h);
+  }, [isJudging, strokes]);
+
+  // Submit → export with white background
+  const handleSubmit = async () => {
+    const canvas = canvasRef.current!;
+    const dataUrl = canvas.toDataURL('image/png');
+    onSubmit(dataUrl);
   };
 
   return (
-    <div className="w-full flex flex-col items-center animate-fadeIn">
-      <div className="w-full max-w-3xl bg-gray-800 p-4 sm:p-6 rounded-xl border border-gray-700 shadow-2xl">
-        <div className="flex justify-between items-center mb-4">
-          <h2 className="text-2xl sm:text-4xl font-bold">
-            Draw: <span className="text-cyan-400">{stateName}</span>
-          </h2>
-           {challengeProgress && (
-            <div className="text-sm font-medium text-gray-400 bg-gray-700 px-3 py-1 rounded-full">
-                {challengeProgress.current} / {challengeProgress.total}
-            </div>
+    <div className="w-full">
+      <div className="flex items-center justify-between mb-3">
+        <div className="text-xl font-semibold">
+          Draw: <span className="text-cyan-400">{stateName}</span>
+          {challengeProgress && (
+            <span className="ml-2 text-sm text-gray-400">
+              ({challengeProgress.current}/{challengeProgress.total})
+            </span>
           )}
-          <div className={`flex items-center text-2xl sm:text-3xl font-mono ${timer < 11 && timerActive ? 'text-red-500 animate-pulse' : 'text-gray-300'}`}>
-            <ClockIcon className="w-6 h-6 sm:w-8 sm:h-8 mr-2" />
-            <span>0:{timer.toString().padStart(2, '0')}</span>
-          </div>
         </div>
+        <div className="flex gap-2">
+          <button
+            className="px-3 py-2 rounded-md bg-gray-700 text-white hover:bg-gray-600 disabled:opacity-40"
+            onClick={handleUndo}
+            disabled={isJudging || strokes.length === 0}
+            title="Undo (Z)"
+          >
+            Undo
+          </button>
+          <button
+            className="px-3 py-2 rounded-md bg-gray-700 text-white hover:bg-gray-600 disabled:opacity-40"
+            onClick={handleClear}
+            disabled={isJudging || strokes.length === 0}
+            title="Clear (C)"
+          >
+            Clear
+          </button>
+        </div>
+      </div>
 
-        <div className="relative w-full aspect-video bg-white rounded-lg overflow-hidden border-2 border-gray-500">
-          <canvas
-            ref={canvasRef}
-            width={896} // for a 16:9 ratio
-            height={504}
-            className="w-full h-full cursor-crosshair"
-            onMouseDown={startDrawing}
-            onMouseMove={draw}
-            onMouseUp={stopDrawing}
-            onMouseLeave={stopDrawing}
-            onTouchStart={startDrawing}
-            onTouchMove={draw}
-            onTouchEnd={stopDrawing}
-          />
-          {isJudging && <JudgingLoader />}
-        </div>
-        
-        {error && <p className="text-red-500 text-center mt-4">{error}</p>}
-        
-        <div className="mt-4 flex justify-end">
-            <button
-                onClick={handleSubmit}
-                disabled={isJudging}
-                className="px-8 py-3 bg-green-600 text-white font-bold rounded-lg hover:bg-green-500 disabled:bg-gray-500 disabled:cursor-not-allowed transition-colors duration-200"
-            >
-                {isJudging ? 'Submitting...' : 'Submit'}
-            </button>
-        </div>
+      <div
+        ref={wrapperRef}
+        className="w-full bg-white rounded-md shadow-inner border border-gray-300"
+        style={{ aspectRatio: '16 / 9' }} // keep a nice drawing area
+      >
+        <canvas
+          ref={canvasRef}
+          className="w-full h-full touch-none rounded-md"
+          onPointerDown={onPointerDown}
+          onPointerMove={onPointerMove}
+          onPointerUp={onPointerUp}
+          onPointerCancel={onPointerCancel}
+          onPointerLeave={onPointerLeave}
+        />
+      </div>
+
+      {error && <p className="mt-2 text-red-400 text-sm">{error}</p>}
+
+      <div className="mt-4">
+        <button
+          onClick={handleSubmit}
+          disabled={isJudging}
+          className="px-6 py-3 bg-green-600 text-white font-bold rounded-lg hover:bg-green-500 disabled:opacity-50"
+        >
+          {isJudging ? 'Judging…' : 'Submit'}
+        </button>
       </div>
     </div>
   );
