@@ -34,6 +34,7 @@ const Drawing: React.FC<Props> = ({
 
   const [strokes, setStrokes] = useState<Stroke[]>([]);
   const [current, setCurrent] = useState<Stroke | null>(null);
+  const [localError, setLocalError] = useState<string | null>(null);
 
   // simple 60s timer (starts on first stroke)
   const [secondsLeft, setSecondsLeft] = useState<number>(60);
@@ -139,6 +140,8 @@ const Drawing: React.FC<Props> = ({
     const start = getNorm(ev);
     setCurrent([start]);
     startTimerIfNeeded();
+    // clear any local error when user starts drawing
+    if (localError) setLocalError(null);
   };
 
   const onPointerMove = (ev: React.PointerEvent<HTMLCanvasElement>) => {
@@ -188,6 +191,7 @@ const Drawing: React.FC<Props> = ({
   const handleClear = () => {
     setStrokes([]);
     resetTimer();
+    setLocalError(null);
     const canvas = canvasRef.current!;
     const ctx = canvas.getContext('2d')!;
     ctx.fillStyle = '#ffffff';
@@ -207,6 +211,29 @@ const Drawing: React.FC<Props> = ({
   }, [isJudging, strokes]);
 
   const handleSubmit = () => {
+    // Client-side guard: require some minimal stroke content before submitting.
+    // Compute total normalized path length (coords are in 0..1) and point count.
+    const totalNormLength = strokes.reduce((acc, s) => {
+      for (let i = 1; i < s.length; i++) {
+        const dx = s[i].x - s[i - 1].x;
+        const dy = s[i].y - s[i - 1].y;
+        acc += Math.hypot(dx, dy);
+      }
+      return acc;
+    }, 0);
+    const totalPoints = strokes.reduce((acc, s) => acc + s.length, 0) + (current ? current.length : 0);
+
+    const MIN_NORM_LENGTH = 0.02; // ~2% of canvas diagonal
+    const MIN_POINTS = 6;
+    if (strokes.length === 0 && !current) {
+      // nothing drawn - just return (Submit is disabled when there are no strokes)
+      return;
+    }
+    if (totalNormLength < MIN_NORM_LENGTH || totalPoints < MIN_POINTS) {
+      setLocalError('Drawing too small — draw thicker or add more strokes before submitting.');
+      return;
+    }
+
     const canvas = canvasRef.current!;
     const dataUrl = canvas.toDataURL('image/png');
     onSubmit(dataUrl);
@@ -242,6 +269,7 @@ const Drawing: React.FC<Props> = ({
   </div>
 
   {error && <p className="mt-4 text-red-400 text-sm">{error}</p>}
+  {localError && <p className="mt-4 text-red-400 text-sm">{localError}</p>}
 </div>
 
 
@@ -264,7 +292,7 @@ const Drawing: React.FC<Props> = ({
           <div className="mt-6 w-full max-w-[640px] flex items-center justify-between">
             <button
               onClick={handleSubmit}
-              disabled={isJudging}
+              disabled={isJudging || (strokes.length === 0 && !current)}
               className="px-6 py-3 bg-green-600 text-white font-bold rounded-lg hover:bg-green-500 disabled:opacity-50"
             >
               {isJudging ? 'Judging…' : 'Submit'}

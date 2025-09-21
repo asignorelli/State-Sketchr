@@ -19,7 +19,8 @@ const DEFAULT_OPTS: Required<CompareOpts> = {
   angles: [-10, -6, -3, 0, 3, 6, 10],
   drawThresh: 170,
   outlineLumThresh: 110,
-  tolerancePx: 1,
+  // default tolerance in pixels for matching edges. Lower = stricter.
+  tolerancePx: 0.75,
 };
 
 function fBeta(precision: number, recall: number, beta: number) {
@@ -197,6 +198,33 @@ export async function judgeDrawing(
     loadImage(outlineUrl),
   ]);
 
+  // QUICK EMPTY-DRAWING GUARD:
+  // Some PNGs (transparent backgrounds or anti-aliased artifacts) can
+  // produce a small number of dark pixels that confuse the edge matcher.
+  // Do a cheap check for any non-white pixels first and bail out if almost
+  // none are present.
+  try {
+    const quickID = rasterize(userImg, size, 0);
+    // threshold high (250) so any pixel not nearly-white counts as "ink"
+    const quickMask = maskFromImageData(quickID, 250);
+    const quickInk = count(quickMask);
+    const MIN_QUICK_INK = Math.max(10, Math.round(size * 0.005)); // ~2-3 for 512
+    if (quickInk < MIN_QUICK_INK) {
+      return {
+        score: 0,
+        critique:
+          "We couldn’t detect enough drawing. Try thicker, darker lines and trace along the edge.",
+        precision: 0,
+        recall: 0,
+        ratio: 0,
+        angle: 0,
+      } as Score;
+    }
+  } catch (e) {
+    // non-fatal: if rasterize/loadImage behave unexpectedly, continue to main path
+    void e;
+  }
+
   // Outline: thin edge
   const outlineID = rasterize(outlineImg, size);
   const outlineMask = maskFromImageData(outlineID, outlineLumThresh);
@@ -210,7 +238,27 @@ export async function judgeDrawing(
       ? Math.max(2, baseTol)
       : baseTol;
 
-  let best = { score: 0, precision: 0, recall: 0, angle: 0 };
+  let best: { score: number; precision: number; recall: number; ratio?: number } = { score: 0, precision: 0, recall: 0 };
+
+  // Minimum-ink guard (quick pre-check using the non-rotated submission)
+  // This avoids unnecessary work and prevents empty/near-empty canvases from
+  // ever entering the rotation/precision loop where tiny artifacts might
+  // otherwise produce a non-zero score.
+  const MIN_USER_EDGE_PIXELS = Math.max(150, Math.round(size * 0.5));
+  const baseUserID = rasterize(userImg, size, 0);
+  const baseUserMask = maskFromImageData(baseUserID, drawThresh);
+  const baseUserEdge = edgeFromMask(baseUserMask, size, size);
+  const baseUserEdgeCount = count(baseUserEdge);
+  if (baseUserEdgeCount < MIN_USER_EDGE_PIXELS) {
+    return {
+      score: 0,
+      critique:
+        "We couldn’t detect enough drawing near the border. Try thicker, darker lines and trace along the edge.",
+      precision: 0,
+      recall: 0,
+      ratio: baseUserEdgeCount / Math.max(1, outlineEdgeCount),
+    } as Score;
+  }
 
   for (const deg of angles) {
     // User: thin edge (for this rotation)
@@ -220,7 +268,8 @@ export async function judgeDrawing(
     const userEdgeCount = count(userEdge);
 
     // --- minimum-ink guard (prevents generous scores on blanks/tiny scribbles) ---
-    const MIN_USER_EDGE_PIXELS = Math.max(150, Math.round(size * 0.5)); // ~256 for size=512
+    // We already performed a non-rotated pre-check above; keep the per-rotation
+    // continue as a safety for pathological cases.
     if (userEdgeCount < MIN_USER_EDGE_PIXELS) {
       continue; // treat as no drawing
     }
@@ -228,15 +277,17 @@ export async function judgeDrawing(
     // Edge-to-edge precision/recall with distance transform tolerance
     const { precision, recall } = precisionRecall(userEdge, outlineEdge, size, size, tol);
 
-    // Recall-heavy Fβ (β=2.5 favors covering the outline)
-    const base = fBeta(precision, recall, 2.5); // 0..1
+  // Balanced F1 score (precision & recall equally important)
+  const base = fBeta(precision, recall, 1); // F1
 
-    // Length penalty: if your edge length is tiny vs outline, score drops hard
-    const ratio = userEdgeCount / Math.max(1, outlineEdgeCount);
-    const lengthPenalty = Math.min(1, Math.max(0, (ratio - 0.1) / 0.7)); // 0→1 as ratio 0.1→0.8
+  // Length penalty: require more of the outline length to get credit.
+  // Ramp from 0.2→0.9 (ratio): below 20% -> 0, at 90% -> 1
+  const ratio = userEdgeCount / Math.max(1, outlineEdgeCount);
+  const lengthPenalty = Math.min(1, Math.max(0, (ratio - 0.2) / 0.7)); // 0→1 as ratio 0.2→0.9
 
-    const score = Math.round(100 * base * lengthPenalty);
-    if (score > best.score) best = { score, precision, recall, angle: deg };
+  const score = Math.round(100 * base * lengthPenalty);
+  const r = userEdgeCount / Math.max(1, outlineEdgeCount);
+  if (score > best.score) best = { score, precision, recall, ratio: r };
   }
 
   if (best.score === 0) {
@@ -244,13 +295,31 @@ export async function judgeDrawing(
       score: 0,
       critique:
         "We couldn’t detect enough drawing near the border. Try thicker, darker lines and trace along the edge.",
+      precision: best.precision,
+      recall: best.recall,
+      ratio: (best as any).ratio || 0,
+    } as Score;
+  }
+
+  // FINAL SANITY GUARD: if the user's total edge length is tiny relative to the outline
+  // (e.g., an almost-empty canvas that snuck past earlier checks), treat as no drawing.
+  const MIN_ACCEPT_RATIO = 0.02; // require at least 2% of outline edge length
+  const bestRatio = (best as any).ratio || 0;
+  if (bestRatio < MIN_ACCEPT_RATIO) {
+    return {
+      score: 0,
+      critique:
+        "We couldn’t detect enough drawing near the border. Try thicker, darker lines and trace along the edge.",
+      precision: best.precision,
+      recall: best.recall,
+      ratio: bestRatio,
     } as Score;
   }
 
   const critique =
     `Matched ${Math.round(100 * best.recall)}% of the outline, ` +
     `with ${Math.round(100 * best.precision)}% of your strokes near the edge. ` +
-    (best.angle ? `Auto-rotated ${best.angle}° for best match.` : 'Orientation looked good.');
+    'Orientation looked good.';
 
-  return { score: best.score, critique } as Score;
+  return { score: best.score, critique, precision: best.precision, recall: best.recall, ratio: (best as any).ratio } as Score;
 }

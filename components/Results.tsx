@@ -48,8 +48,9 @@ const Results: React.FC<ResultsProps> = ({
           {score.score}%
         </p>
         <p className="text-gray-400 italic mt-2 max-w-lg">
-          "{(score as any).critique ?? (score as any).explanation ?? ''}"
+          "{score.critique ?? ''}"
         </p>
+        {/* debug stats removed from UI */}
       </div>
 
       <div className="w-full max-w-5xl grid grid-cols-1 md:grid-cols-2 gap-6">
