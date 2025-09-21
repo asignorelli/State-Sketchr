@@ -9,11 +9,11 @@ interface ResultsProps {
   isLastInChallenge: boolean;
 }
 
-// turn "New York" -> "new-york.png"
+// Turn "New York" -> "/outlines/new-york.png"
 function fileForState(name: string) {
   const slug = name
     .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-') // spaces & punctuation -> hyphen
+    .replace(/[^a-z0-9]+/g, '-') // spaces/punct -> hyphen
     .replace(/(^-|-$)/g, '');    // trim hyphens
   return `/outlines/${slug}.png`;
 }
@@ -47,7 +47,8 @@ const Results: React.FC<ResultsProps> = ({
         >
           {score.score}%
         </p>
-        <p className="text-gray-400 italic mt-2 max-w-lg">"{score.critique}"</p>
+        {/* If your Score has "critique", show it; if you switched to "explanation", update this line */}
+        <p className="text-gray-400 italic mt-2 max-w-lg">"{(score as any).critique ?? (score as any).explanation ?? ''}"</p>
       </div>
 
       <div className="w-full max-w-5xl grid grid-cols-1 md:grid-cols-2 gap-6">

@@ -1,6 +1,5 @@
 import React, { useState, useCallback, useMemo } from 'react';
 import { GameMode, US_STATES } from './constants';
-// Fix: GameStatus is an enum used as a value, so it cannot be a type-only import.
 import { GameStatus } from './types';
 import type { StateName, Score } from './types';
 import Header from './components/Header';
@@ -9,7 +8,7 @@ import Drawing from './components/Drawing';
 import Results from './components/Results';
 import StateSelectionModal from './components/StateSelectionModal';
 import { judgeDrawing } from './services/geminiService';
-import { StateOutlines } from './assets/StateOutlines';
+// ❌ remove: import { StateOutlines } from './assets/StateOutlines';
 
 const App: React.FC = () => {
   const [gameStatus, setGameStatus] = useState<GameStatus>(GameStatus.Welcome);
@@ -25,7 +24,7 @@ const App: React.FC = () => {
     if (gameMode !== GameMode.Challenge || !currentState) return -1;
     return challengeStates.indexOf(currentState);
   }, [gameMode, challengeStates, currentState]);
-  
+
   const startNewGame = useCallback((mode: GameMode, state?: StateName) => {
     setGameMode(mode);
     setScore(null);
@@ -63,7 +62,7 @@ const App: React.FC = () => {
       console.error(err);
       const errorMessage = err instanceof Error ? err.message : 'Could not get score from AI. Please try again.';
       setError(errorMessage);
-      setGameStatus(GameStatus.Drawing); 
+      setGameStatus(GameStatus.Drawing);
     }
   }, [currentState]);
 
@@ -83,7 +82,7 @@ const App: React.FC = () => {
         setGameMode(null);
       }
     } else if (gameMode === GameMode.Choose) {
-        setIsModalOpen(true);
+      setIsModalOpen(true);
     }
   }, [gameMode, challengeStates, currentChallengeIndex, startNewGame]);
 
@@ -94,7 +93,7 @@ const App: React.FC = () => {
     setScore(null);
     setLastDrawing(null);
     setError(null);
-  }
+  };
 
   const renderContent = () => {
     switch (gameStatus) {
@@ -114,19 +113,17 @@ const App: React.FC = () => {
         return <Welcome onStart={startNewGame} />;
       case GameStatus.Results:
         if (currentState && lastDrawing && score) {
-           const StateOutlineComponent = StateOutlines[currentState];
           return (
             <Results
               stateName={currentState}
               userDrawing={lastDrawing}
-              StateOutlineComponent={StateOutlineComponent}
               score={score}
               onNext={handleNextState}
               isLastInChallenge={gameMode === GameMode.Challenge && currentChallengeIndex === challengeStates.length - 1}
             />
           );
         }
-        return <Welcome onStart={startNewGame} />; // Fallback
+        return <Welcome onStart={startNewGame} />;
       case GameStatus.Welcome:
       default:
         return <Welcome onStart={startNewGame} />;
