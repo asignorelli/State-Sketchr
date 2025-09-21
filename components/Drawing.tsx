@@ -9,8 +9,7 @@ type Props = {
   challengeProgress?: { current: number; total: number };
 };
 
-// normalized points (0..1) so redraws are easy when the canvas resizes
-type NPoint = { x: number; y: number };
+type NPoint = { x: number; y: number };  // normalized 0..1
 type Stroke = NPoint[];
 
 const LINE_WIDTH = 4;
@@ -18,9 +17,8 @@ const LINE_CAP: CanvasLineCap = 'round';
 const LINE_JOIN: CanvasLineJoin = 'round';
 const INK_COLOR = '#000000';
 
-// square canvas + viewport cap so it always fits
-const MAX_VH = 0.62;   // canvas size <= 62% of viewport height
-const MIN_SIZE = 240;  // minimum square size
+const MAX_VH = 0.62;  // canvas size <= 62% of viewport height
+const MIN_SIZE = 240; // don't go smaller than this
 
 const Drawing: React.FC<Props> = ({
   stateName,
@@ -39,10 +37,15 @@ const Drawing: React.FC<Props> = ({
   const [secondsLeft, setSecondsLeft] = useState<number>(60);
   const [timerRunning, setTimerRunning] = useState<boolean>(false);
 
-  // ===== drawing helpers =====
+  // ---------- drawing helpers ----------
   const n2p = (pt: NPoint, w: number, h: number) => ({ x: pt.x * w, y: pt.y * h });
 
-  const drawStroke = (s: Stroke, ctx: CanvasRenderingContext2D, w: number, h: number) => {
+  const drawStroke = (
+    s: Stroke,
+    ctx: CanvasRenderingContext2D,
+    w: number,
+    h: number
+  ) => {
     if (!s.length) return;
     ctx.strokeStyle = INK_COLOR;
     ctx.lineWidth = LINE_WIDTH;
@@ -58,36 +61,43 @@ const Drawing: React.FC<Props> = ({
     ctx.stroke();
   };
 
-  const drawAll = (all: Stroke[], ctx: CanvasRenderingContext2D, w: number, h: number) => {
+  const drawAll = (
+    all: Stroke[],
+    ctx: CanvasRenderingContext2D,
+    w: number,
+    h: number
+  ) => {
     ctx.fillStyle = '#ffffff';
     ctx.fillRect(0, 0, w, h);
     for (const s of all) drawStroke(s, ctx, w, h);
   };
 
-  // ===== sizing / crisp scaling =====
+  // ---------- sizing / crisp scaling ----------
   const fitCanvas = useCallback(() => {
-    const canvas = canvasRef.current;
-    const wrapper = wrapperRef.current;
-    if (!canvas || !wrapper) return;
+  const canvas = canvasRef.current;
+  if (!canvas) return;
 
-    const maxByWidth = Math.floor(wrapper.clientWidth);
-    const maxByHeight = Math.floor(window.innerHeight * MAX_VH);
-    const size = Math.max(MIN_SIZE, Math.min(maxByWidth, maxByHeight)); // square
+  // Square size: cap by viewport height and a sensible max width.
+  // This does NOT depend on wrapper width, so it won't grow under the button column.
+  const maxByWidth = Math.min(640, window.innerWidth - 48); // leave a little margin
+  const maxByHeight = Math.floor(window.innerHeight * MAX_VH);
+  const size = Math.max(MIN_SIZE, Math.min(maxByWidth, maxByHeight));
 
-    // CSS size seen by the user
-    canvas.style.width = `${size}px`;
-    canvas.style.height = `${size}px`;
+  // CSS size
+  canvas.style.width = `${size}px`;
+  canvas.style.height = `${size}px`;
 
-    // backing pixels
-    const dpr = Math.max(1, Math.floor(window.devicePixelRatio || 1));
-    canvas.width = Math.floor(size * dpr);
-    canvas.height = Math.floor(size * dpr);
+  // Backing pixels for crispness
+  const dpr = window.devicePixelRatio || 1;
+  canvas.width = Math.round(size * dpr);
+  canvas.height = Math.round(size * dpr);
 
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return;
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    drawAll(strokes, ctx, size, size);
-  }, [strokes]);
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return;
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  drawAll(strokes, ctx, size, size);
+}, [strokes]);
+
 
   useEffect(() => {
     fitCanvas();
@@ -95,17 +105,16 @@ const Drawing: React.FC<Props> = ({
     const ro = new ResizeObserver(() => fitCanvas());
     if (wrapperRef.current) ro.observe(wrapperRef.current);
 
-    window.addEventListener('resize', fitCanvas);
-    const id = window.setTimeout(fitCanvas, 0);
+    const onWinResize = () => fitCanvas();
+    window.addEventListener('resize', onWinResize);
 
     return () => {
       ro.disconnect();
-      window.removeEventListener('resize', fitCanvas);
-      window.clearTimeout(id);
+      window.removeEventListener('resize', onWinResize);
     };
   }, [fitCanvas]);
 
-  // ===== timer =====
+  // ---------- timer ----------
   useEffect(() => {
     if (!timerRunning) return;
     if (secondsLeft <= 0) return;
@@ -124,7 +133,7 @@ const Drawing: React.FC<Props> = ({
     setSecondsLeft(60);
   };
 
-  // ===== pointer events =====
+  // ---------- pointer events ----------
   const getNorm = (ev: React.PointerEvent<HTMLCanvasElement>) => {
     const canvas = canvasRef.current!;
     const rect = canvas.getBoundingClientRect();
@@ -150,6 +159,7 @@ const Drawing: React.FC<Props> = ({
     const updated = [...current, next];
     setCurrent(updated);
 
+    // incremental redraw with CSS pixels (ctx already scaled for DPR)
     const canvas = canvasRef.current!;
     const ctx = canvas.getContext('2d')!;
     const w = canvas.clientWidth;
@@ -174,7 +184,7 @@ const Drawing: React.FC<Props> = ({
   const onPointerCancel = () => endStroke();
   const onPointerLeave = () => endStroke();
 
-  // ===== actions =====
+  // ---------- actions ----------
   const handleUndo = () => {
     if (strokes.length === 0) return;
     const next = strokes.slice(0, -1);
@@ -218,78 +228,80 @@ const Drawing: React.FC<Props> = ({
 
   return (
     <div className="w-full">
-      {/* two-column layout: left = title/timer, right = canvas + buttons */}
       <div className="mx-auto w-full max-w-6xl grid gap-10 md:grid-cols-2 items-start">
         {/* LEFT PANEL */}
-        {/* LEFT PANEL */}
-<div className="order-2 md:order-1 flex flex-col items-center text-center mt-8 md:mt-16">
-  <h2 className="text-5xl md:text-6xl font-extrabold tracking-tight">
-    Draw:
-  </h2>
+        <div className="order-2 md:order-1 flex flex-col items-center text-center mt-0 md:mt-0">
+          <h2 className="text-5xl md:text-6xl font-extrabold tracking-tight">
+            Draw:
+          </h2>
 
-  <div className="mt-2 text-5xl md:text-6xl font-extrabold text-cyan-400">
-    {stateName}
-  </div>
+          <div className="mt-2 text-5xl md:text-6xl font-extrabold text-cyan-400">
+            {stateName}
+          </div>
 
-  {challengeProgress && (
-    <div className="mt-1 text-base md:text-lg text-gray-400">
-      ({challengeProgress.current}/{challengeProgress.total})
+          {challengeProgress && (
+            <div className="mt-1 text-base md:text-lg text-gray-400">
+              ({challengeProgress.current}/{challengeProgress.total})
+            </div>
+          )}
+
+          <div className="mt-8 text-2xl md:text-3xl font-mono text-white/90 flex items-center justify-center gap-3">
+            <span role="img" aria-label="timer">⏱</span> {mm}:{ss}
+          </div>
+
+          {/* Submit under timer */}
+          <button
+            onClick={handleSubmit}
+            disabled={isJudging}
+            className="mt-16 px-6 py-3 bg-green-600 text-white font-bold rounded-lg hover:bg-green-500 disabled:opacity-50"
+          >
+            {isJudging ? 'Judging…' : 'Submit'}
+          </button>
+
+          {error && <p className="mt-4 text-red-400 text-sm">{error}</p>}
+        </div>
+
+        {/* RIGHT PANEL (unchanged grid position) */}
+<div className="order-1 md:order-2">
+  {/* Canvas and vertical buttons in a row so nothing overlaps the canvas */}
+  <div className="flex items-start gap-6">
+    {/* Canvas box: flex-none so it never grows under the buttons */}
+    <div ref={wrapperRef} className="flex-none">
+      <div className="bg-white rounded-md shadow-inner border border-gray-300">
+        <canvas
+          ref={canvasRef}
+          className="block touch-none rounded-md"
+          onPointerDown={onPointerDown}
+          onPointerMove={onPointerMove}
+          onPointerUp={onPointerUp}
+          onPointerCancel={onPointerCancel}
+          onPointerLeave={onPointerLeave}
+        />
+      </div>
     </div>
-  )}
 
-  <div className="mt-8 text-2xl md:text-3xl font-mono text-white/90 flex items-center justify-center gap-3">
-    <span role="img" aria-label="timer">⏱</span> {mm}:{ss}
+    {/* Button column: also flex-none, with a fixed-width feel */}
+    <div className="flex-none flex flex-col gap-3 pt-2">
+      <button
+        className="px-4 py-2 rounded-md bg-gray-700 text-white hover:bg-gray-600 disabled:opacity-40"
+        onClick={handleUndo}
+        disabled={isJudging || strokes.length === 0}
+        title="Undo (Z)"
+      >
+        Undo
+      </button>
+      <button
+        className="px-4 py-2 rounded-md bg-gray-700 text-white hover:bg-gray-600 disabled:opacity-40"
+        onClick={handleClear}
+        disabled={isJudging || (strokes.length === 0 && !current)}
+        title="Clear (C)"
+      >
+        Clear
+      </button>
+    </div>
   </div>
-
-  {error && <p className="mt-4 text-red-400 text-sm">{error}</p>}
 </div>
 
-
-        {/* RIGHT PANEL */}
-        <div className="order-1 md:order-2 flex flex-col items-center">
-          {/* measure width only; canvas is the visible white square */}
-          <div ref={wrapperRef} className="w-full max-w-[640px] mx-auto">
-            <canvas
-              ref={canvasRef}
-              className="block touch-none bg-white rounded-md border border-gray-300 shadow-inner"
-              onPointerDown={onPointerDown}
-              onPointerMove={onPointerMove}
-              onPointerUp={onPointerUp}
-              onPointerCancel={onPointerCancel}
-              onPointerLeave={onPointerLeave}
-            />
-          </div>
-
-          {/* buttons under canvas */}
-          <div className="mt-6 w-full max-w-[640px] flex items-center justify-between">
-            <button
-              onClick={handleSubmit}
-              disabled={isJudging}
-              className="px-6 py-3 bg-green-600 text-white font-bold rounded-lg hover:bg-green-500 disabled:opacity-50"
-            >
-              {isJudging ? 'Judging…' : 'Submit'}
-            </button>
-
-            <div className="flex gap-2">
-              <button
-                className="px-3 py-2 rounded-md bg-gray-700 text-white hover:bg-gray-600 disabled:opacity-40"
-                onClick={handleUndo}
-                disabled={isJudging || strokes.length === 0}
-                title="Undo (Z)"
-              >
-                Undo
-              </button>
-              <button
-                className="px-3 py-2 rounded-md bg-gray-700 text-white hover:bg-gray-600 disabled:opacity-40"
-                onClick={handleClear}
-                disabled={isJudging || (strokes.length === 0 && !current)}
-                title="Clear (C)"
-              >
-                Clear
-              </button>
-            </div>
-          </div>
-        </div>
       </div>
     </div>
   );
