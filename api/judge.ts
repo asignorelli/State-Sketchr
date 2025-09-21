@@ -1,111 +1,86 @@
-import { GoogleGenAI, Type } from "@google/genai";
+// /api/judge.ts  (Edge Function)
+export const config = { runtime: 'edge' };
 
-// This function will be deployed as a serverless function on Vercel.
-// It can securely access environment variables set in the Vercel dashboard.
-const API_KEY = process.env.API_KEY;
-
-// We initialize the AI client only if the API key is available.
-const ai = API_KEY ? new GoogleGenAI({ apiKey: API_KEY }) : null;
-
-// Helper to convert data URL to a Gemini-compatible part
-function dataUrlToGeminiPart(dataUrl: string) {
-  const [header, data] = dataUrl.split(',');
-  const mimeType = header.match(/:(.*?);/)?.[1];
-  if (!mimeType || !data) {
-    throw new Error("Invalid data URL format");
-  }
-  return {
-    inlineData: {
-      mimeType,
-      data,
-    },
-  };
+function json(body: unknown, status = 200) {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { 'content-type': 'application/json' }
+  });
 }
 
-// Vercel Edge runtime is recommended for streaming.
-// You may need to configure this in your vercel.json or project settings.
-export const runtime = 'edge';
-
-// Vercel automatically maps this exported function to the /api/judge endpoint.
-export async function POST(req: Request) {
-  // CRUCIAL CHECK: Ensure the AI client was initialized.
-  if (!ai) {
-    console.error("API_KEY environment variable is not set.");
-    const errorPayload = JSON.stringify({ error: "Server is not configured with an API key." });
-    return new Response(errorPayload, {
-      status: 500,
-      headers: { 'Content-Type': 'application/json' },
-    });
-  }
-
+export default async function handler(req: Request) {
   try {
-    const { drawingDataUrl, stateName } = await req.json();
-
-    if (!drawingDataUrl || !stateName) {
-      const errorPayload = JSON.stringify({ error: 'Missing drawing data or state name' });
-      return new Response(errorPayload, {
-        status: 400,
-        headers: { 'Content-Type': 'application/json' },
-      });
+    if (req.method !== 'POST') {
+      return json({ error: 'Method not allowed' }, 405);
     }
 
-    // This is the key change: we return a ReadableStream.
-    // This sends headers back to the browser immediately, keeping the connection open.
-    const stream = new ReadableStream({
-      async start(controller) {
-        try {
-          const model = "gemini-2.5-flash";
-          const imagePart = dataUrlToGeminiPart(drawingDataUrl);
-          const textPart = {
-            text: `This is a user's drawing of the US state: ${stateName}. Analyze the accuracy of the outline compared to the real state. Provide a score from 0 to 100, where 100 is a perfect match. Also provide a short, one-sentence, encouraging critique. Your response must be in JSON format.`
-          };
+    let body: any;
+    try {
+      body = await req.json();
+    } catch {
+      return json({ error: 'Invalid JSON body' }, 400);
+    }
 
-          const responseFromAi = await ai.models.generateContent({
-            model: model,
-            contents: { parts: [textPart, imagePart] },
-            config: {
-              // THIS IS THE KEY CHANGE FOR SPEED!
-              // Disable "thinking" for a much faster, game-appropriate response.
-              thinkingConfig: { thinkingBudget: 0 },
+    const { imageDataUrl, stateName } = body || {};
+    if (!imageDataUrl || !stateName) {
+      return json({ error: 'Missing imageDataUrl or stateName' }, 400);
+    }
+
+    const apiKey = process.env.GEMINI_API_KEY;
+    if (!apiKey) {
+      return json({ error: 'Server misconfigured: GEMINI_API_KEY missing' }, 500);
+    }
+
+    // Accept "data:image/png;base64,..." or raw base64
+    const base64 = imageDataUrl.includes(',') ? imageDataUrl.split(',')[1] : imageDataUrl;
+
+    const prompt = `You are grading how closely the user's drawing matches the outline of ${stateName}.
+Return ONLY strict JSON: {"score": number, "explanation": string}. Score is 0–100.`;
+
+    const upstream = await fetch(
+      'https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=' + apiKey,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          contents: [
+            {
+              parts: [
+                { text: prompt },
+                { inline_data: { mime_type: 'image/png', data: base64 } }
+              ]
             }
-          });
-          
-          // Once we have the response, we send it down the stream.
-          let responseText = responseFromAi.text;
+          ]
+        })
+      }
+    );
 
-          // The model can sometimes wrap the JSON in markdown. We need to strip it.
-          const jsonMatch = responseText.match(/```json\n([\s\S]*?)\n```/);
-          if (jsonMatch && jsonMatch[1]) {
-            responseText = jsonMatch[1];
-          } else {
-            // Fallback for cases where it's just the JSON object without markdown
-            responseText = responseText.replace(/^```json/, "").replace(/```$/, "").trim();
-          }
+    const ct = upstream.headers.get('content-type') || '';
+    if (!ct.includes('application/json')) {
+      const text = await upstream.text().catch(() => '');
+      return json({ error: 'Upstream non-JSON', status: upstream.status, body: text.slice(0, 200) }, upstream.status || 502);
+    }
 
-          controller.enqueue(new TextEncoder().encode(responseText));
-          controller.close(); // Signal that we're done.
+    const data = await upstream.json();
 
-        } catch (error) {
-           console.error("Error during Gemini API call:", error);
-           const errorPayload = JSON.stringify({ error: 'Failed to get a response from the AI model.' });
-           controller.enqueue(new TextEncoder().encode(errorPayload));
-           controller.close();
-        }
-      },
-    });
+    // Pull candidate text and parse JSON
+    const parts = data?.candidates?.[0]?.content?.parts ?? [];
+    const modelText = parts.map((p: any) => p?.text || '').join('');
+    let parsed: any;
+    try {
+      parsed = JSON.parse(modelText);
+    } catch {
+      const m = modelText.match(/\{[\s\S]*\}/);
+      if (m) parsed = JSON.parse(m[0]);
+    }
 
-    // Return the stream immediately.
-    return new Response(stream, {
-      status: 200,
-      headers: { 'Content-Type': 'application/json' },
-    });
+    if (!parsed || typeof parsed.score !== 'number') {
+      return json({ score: 0, explanation: 'Model returned unexpected format', raw: modelText });
+    }
 
-  } catch (error) {
-    console.error("Error in serverless function handler:", error);
-    const errorPayload = JSON.stringify({ error: 'An unexpected error occurred on the server.' });
-    return new Response(errorPayload, {
-      status: 500,
-      headers: { 'Content-Type': 'application/json' },
-    });
+    const score = Math.max(0, Math.min(100, Math.round(parsed.score)));
+    return json({ score, explanation: String(parsed.explanation ?? '') });
+  } catch (err: any) {
+    return json({ error: err?.message || 'Unexpected server error' }, 500);
   }
 }
