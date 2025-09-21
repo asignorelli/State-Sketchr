@@ -1,29 +1,25 @@
 // services/geminiService.ts
 import type { Score } from '../types';
 
-// Turn "New York" -> "new-york"
+// "New York" -> "new-york"
 function slugifyState(name: string) {
-  return name
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/(^-|-$)/g, '');
+  return name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
 }
 
 type CompareOpts = {
-  size?: number;           // working canvas size (square)
-  angles?: number[];       // degrees to test for the user's drawing
-  lineDilate?: number;     // how many pixels to "thicken" lines in masks
-  drawThresh?: number;     // 0..255 luminance threshold for user's drawing
-  outAlphaThresh?: number; // 0..255 alpha threshold for outline PNG
+  size?: number;           // working canvas size
+  angles?: number[];       // rotations to try (deg)
+  lineDilate?: number;     // extra thickening for very thin strokes
+  drawThresh?: number;     // 0..255 (higher = more pixels count as ink)
+  tolerancePx?: number;    // distance band around the outline for matching
 };
 
-// Make defaults required so the merged config is fully typed
 const DEFAULT_OPTS: Required<CompareOpts> = {
   size: 512,
   angles: [-12, -8, -4, 0, 4, 8, 12],
-  lineDilate: 1,
-  drawThresh: 220,
-  outAlphaThresh: 32,
+  lineDilate: 0,          // don't thicken drawing by default
+  drawThresh: 180,        // treat fairly dark pixels as ink
+  tolerancePx: 3,         // how far from the outline counts as "on the edge"
 };
 
 function loadImage(src: string): Promise<HTMLImageElement> {
@@ -37,12 +33,8 @@ function loadImage(src: string): Promise<HTMLImageElement> {
   });
 }
 
-// Draw image onto a square canvas, preserving aspect ratio. Optional rotation (deg).
-function rasterize(
-  img: HTMLImageElement,
-  size: number,
-  rotationDeg = 0
-): ImageData {
+// Draw image onto a square canvas, optional rotation
+function rasterize(img: HTMLImageElement, size: number, rotationDeg = 0): ImageData {
   const c = document.createElement('canvas');
   c.width = c.height = size;
   const ctx = c.getContext('2d', { willReadFrequently: true });
@@ -58,9 +50,7 @@ function rasterize(
   const w = img.width * scale;
   const h = img.height * scale;
 
-  const cx = size / 2;
-  const cy = size / 2;
-
+  const cx = size / 2, cy = size / 2;
   ctx.translate(cx, cy);
   ctx.rotate((rotationDeg * Math.PI) / 180);
   ctx.drawImage(img, -w / 2, -h / 2, w, h);
@@ -69,46 +59,40 @@ function rasterize(
   return ctx.getImageData(0, 0, size, size);
 }
 
-// Produce a binary mask (Uint8Array of 0/1) from ImageData.
+// Binary mask (Uint8Array of 0/1)
+// forOutline: only DARK pixels -> 1 (ignore alpha so white bg doesn't count)
+// forDrawing: pixels darker than drawThresh -> 1
 function imageDataToMask(
   data: ImageData,
   forOutline: boolean,
-  drawThresh: number,
-  outAlphaThresh: number
+  drawThresh: number
 ): Uint8Array {
   const { data: px, width: w, height: h } = data;
   const mask = new Uint8Array(w * h);
   for (let i = 0; i < px.length; i += 4) {
-    const r = px[i], g = px[i + 1], b = px[i + 2], a = px[i + 3];
+    const r = px[i], g = px[i + 1], b = px[i + 2];
     const lum = (r + g + b) / 3;
-    let on = 0;
-    if (forOutline) {
-      // outline pixels are usually opaque dark strokes on transparent bg
-      on = (a > outAlphaThresh || lum < 200) ? 1 : 0;
-    } else {
-      // user drawing is dark ink on white bg
-      on = lum < drawThresh ? 1 : 0;
-    }
+    // threshold for outline edges — tune 140..100 depending on how light your PNG stroke is
+    const outlineLumThresh = 120;
+    const on = forOutline ? (lum < outlineLumThresh ? 1 : 0) : (lum < drawThresh ? 1 : 0);
     mask[i / 4] = on;
   }
   return mask;
 }
 
-// Simple dilation to "thicken" thin lines by radius pixels.
+// Morphological dilation by 'radius' pixels
 function dilate(mask: Uint8Array, w: number, h: number, radius: number): Uint8Array {
   if (radius <= 0) return mask;
   const out = new Uint8Array(mask);
   const r2 = radius * radius;
   for (let y = 0; y < h; y++) {
     for (let x = 0; x < w; x++) {
-      if (mask[y * w + x]) {
-        for (let dy = -radius; dy <= radius; dy++) {
-          for (let dx = -radius; dx <= radius; dx++) {
-            if (dx * dx + dy * dy <= r2) {
-              const nx = x + dx, ny = y + dy;
-              if (nx >= 0 && ny >= 0 && nx < w && ny < h) out[ny * w + nx] = 1;
-            }
-          }
+      if (!mask[y * w + x]) continue;
+      for (let dy = -radius; dy <= radius; dy++) {
+        for (let dx = -radius; dx <= radius; dx++) {
+          if (dx * dx + dy * dy > r2) continue;
+          const nx = x + dx, ny = y + dy;
+          if (nx >= 0 && ny >= 0 && nx < w && ny < h) out[ny * w + nx] = 1;
         }
       }
     }
@@ -116,64 +100,65 @@ function dilate(mask: Uint8Array, w: number, h: number, radius: number): Uint8Ar
   return out;
 }
 
-// Compute overlap metrics between two masks of equal size
-function overlapMetrics(a: Uint8Array, b: Uint8Array): { iou: number; covA: number; covB: number } {
-  let inter = 0, cntA = 0, cntB = 0;
-  const n = a.length;
-  for (let i = 0; i < n; i++) {
-    if (a[i]) cntA++;
-    if (b[i]) cntB++;
-    if (a[i] && b[i]) inter++;
-  }
-  const union = cntA + cntB - inter;
-  const iou = union ? inter / union : 0;
-  const covA = cntA ? inter / cntA : 0; // "how much of drawing overlaps outline"
-  const covB = cntB ? inter / cntB : 0; // "how much of outline is covered by drawing"
-  return { iou, covA, covB };
+function count(mask: Uint8Array): number {
+  let s = 0; for (let i = 0; i < mask.length; i++) s += mask[i]; return s;
+}
+function overlapCount(a: Uint8Array, b: Uint8Array): number {
+  let s = 0; for (let i = 0; i < a.length; i++) if (a[i] && b[i]) s++; return s;
 }
 
-// Combine metrics into 0..100 score. Tune weights as desired.
-function scoreFromMetrics(iou: number, covA: number, covB: number): number {
-  const s = 0.4 * iou + 0.3 * covA + 0.3 * covB;
-  return Math.round(100 * s);
+// Final score from precision/recall
+function scoreFromPR(precision: number, recall: number): number {
+  // Weighted average (you can tweak weights)
+  return Math.round(100 * (0.5 * precision + 0.5 * recall));
 }
 
-// Public API: compare the user's drawing against the state outline PNG (no AI).
+// Compare user's drawing to state outline PNG — NO AI.
 export async function judgeDrawing(drawingDataUrl: string, stateName: string, opts: CompareOpts = {}): Promise<Score> {
-  // Merge opts into required config so nothing is undefined
   const cfg: Required<CompareOpts> = { ...DEFAULT_OPTS, ...opts };
-  const { size, angles, lineDilate, drawThresh, outAlphaThresh } = cfg;
+  const { size, angles, lineDilate, drawThresh, tolerancePx } = cfg;
 
   const outlineUrl = `/outlines/${slugifyState(stateName)}.png`;
-
-  // Load images
   const [userImg, outlineImg] = await Promise.all([
     loadImage(drawingDataUrl),
     loadImage(outlineUrl),
   ]);
 
-  // Precompute the outline mask once
+  // Outline edge mask (just the dark stroke)
   const outlineID = rasterize(outlineImg, size);
-  let outlineMask = imageDataToMask(outlineID, true, drawThresh, outAlphaThresh);
-  outlineMask = dilate(outlineMask, size, size, lineDilate);
+  let outlineMask = imageDataToMask(outlineID, true, drawThresh);
+  // Slightly fatten the outline so users don't need perfect pixel alignment
+  outlineMask = dilate(outlineMask, size, size, 1);
 
-  // Try a few rotations of the user's drawing and keep the best score
-  let best = { score: 0, iou: 0, covA: 0, covB: 0, angle: 0 };
+  // A tolerance "band" around the outline that counts as a hit
+  const outlineBand = dilate(outlineMask, size, size, tolerancePx);
+
+  let best = { score: 0, precision: 0, recall: 0, angle: 0 };
 
   for (const deg of angles) {
     const userID = rasterize(userImg, size, deg);
-    let userMask = imageDataToMask(userID, false, drawThresh, outAlphaThresh);
-    userMask = dilate(userMask, size, size, lineDilate);
+    let userMask = imageDataToMask(userID, false, drawThresh);
+    if (lineDilate > 0) userMask = dilate(userMask, size, size, lineDilate);
 
-    const { iou, covA, covB } = overlapMetrics(userMask, outlineMask);
-    const score = scoreFromMetrics(iou, covA, covB);
-    if (score > best.score) best = { score, iou, covA, covB, angle: deg };
+    // Precision: % of drawing pixels that land within 'tolerancePx' of the outline
+    const goodInk = overlapCount(userMask, outlineBand);
+    const inkTotal = count(userMask);
+    const precision = inkTotal ? goodInk / inkTotal : 0;
+
+    // Recall: % of outline pixels that have user ink within 'tolerancePx'
+    const userBand = dilate(userMask, size, size, tolerancePx);
+    const coveredOutline = overlapCount(outlineMask, userBand);
+    const outlineTotal = count(outlineMask);
+    const recall = outlineTotal ? coveredOutline / outlineTotal : 0;
+
+    const score = scoreFromPR(precision, recall);
+    if (score > best.score) best = { score, precision, recall, angle: deg };
   }
 
   const critique =
-    `Matched ${Math.round(100 * best.covB)}% of the outline, ` +
-    `with ${Math.round(100 * best.covA)}% of your strokes overlapping. ` +
-    (best.angle ? `Auto-rotated by ${best.angle}° for best match.` : 'Orientation looked good.');
+    `Matched ${Math.round(100 * best.recall)}% of the outline, ` +
+    `with ${Math.round(100 * best.precision)}% of your strokes near the edge. ` +
+    (best.angle ? `Auto-rotated ${best.angle}° for best match.` : 'Orientation looked good.');
 
   return { score: best.score, critique } as Score;
 }
