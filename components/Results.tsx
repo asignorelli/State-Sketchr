@@ -9,12 +9,12 @@ interface ResultsProps {
   isLastInChallenge: boolean;
 }
 
-// Turn "New York" -> "/outlines/new-york.png"
+// "New York" -> "/outlines/new-york.png"
 function fileForState(name: string) {
   const slug = name
     .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-') // spaces/punct -> hyphen
-    .replace(/(^-|-$)/g, '');    // trim hyphens
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/(^-|-$)/g, '');
   return `/outlines/${slug}.png`;
 }
 
@@ -25,51 +25,57 @@ const Results: React.FC<ResultsProps> = ({
   onNext,
   isLastInChallenge
 }) => {
-  const getScoreColor = (s: number) => {
-    if (s >= 80) return 'text-green-400';
-    if (s >= 50) return 'text-yellow-400';
-    return 'text-red-400';
-  };
+  const critique =
+    (score as any).critique ?? (score as any).explanation ?? '';
 
   const outlineSrc = fileForState(stateName);
 
   return (
-    <div className="w-full flex flex-col items-center p-4 animate-fadeIn">
-      <h2 className="text-3xl font-bold mb-2">
-        Results for <span className="text-cyan-400">{stateName}</span>
-      </h2>
+    <div className="w-full max-w-6xl mx-auto space-y-6">
+      {/* Title + Accuracy */}
+      <div className="text-center">
+        <h2 className="text-3xl md:text-4xl font-extrabold mb-2">
+          Draw: <span className="text-red-400">{stateName}</span>
+        </h2>
 
-      <div className="text-center mb-6">
-        <p className="text-lg">Accuracy:</p>
-        <p
-          className={`text-7xl font-bold ${getScoreColor(score.score)}`}
-          style={{ textShadow: '0 0 10px currentColor' }}
-        >
-          {score.score}%
-        </p>
-        {/* If your Score has "critique", show it; if you switched to "explanation", update this line */}
-        <p className="text-gray-400 italic mt-2 max-w-lg">"{(score as any).critique ?? (score as any).explanation ?? ''}"</p>
+        <p className="text-white/80">Accuracy:</p>
+        <div className="relative inline-block mt-1">
+          <span className="absolute inset-0 blur-xl bg-red-500/40 rounded-full"></span>
+          <span className="relative text-6xl md:text-7xl font-extrabold text-red-400 drop-shadow-[0_0_18px_rgba(239,68,68,.45)]">
+            {score.score}%
+          </span>
+        </div>
+
+        {critique && (
+          <p className="text-white/70 italic mt-3 max-w-2xl mx-auto">
+            “{critique}”
+          </p>
+        )}
       </div>
 
-      <div className="w-full max-w-5xl grid grid-cols-1 md:grid-cols-2 gap-6">
+      {/* Two framed panels */}
+      <div className="grid md:grid-cols-2 gap-6">
         {/* Your Drawing */}
-        <div className="flex flex-col items-center p-4 bg-gray-800 rounded-lg border border-gray-700">
-          <h3 className="text-xl font-semibold mb-2">Your Drawing</h3>
-          <div className="w-full aspect-video bg-white rounded-md p-2">
-            <img src={userDrawing} alt="Your drawing" className="w-full h-full object-contain" />
+        <div className="rounded-2xl bg-white/5 border border-white/10 shadow-xl p-5">
+          <div className="text-sm font-semibold text-white/90 mb-2">Your Drawing</div>
+          <div className="rounded-2xl ring-4 ring-red-500 bg-white p-3 aspect-[4/3] flex items-center justify-center">
+            <img
+              src={userDrawing}
+              alt="Your drawing"
+              className="w-full h-full object-contain rounded-lg"
+            />
           </div>
         </div>
 
-        {/* Actual Outline (PNG) */}
-        <div className="flex flex-col items-center p-4 bg-gray-800 rounded-lg border border-gray-700">
-          <h3 className="text-xl font-semibold mb-2">Actual Outline</h3>
-          <div className="w-full aspect-video bg-white rounded-md p-2">
+        {/* Actual Outline */}
+        <div className="rounded-2xl bg-white/5 border border-white/10 shadow-xl p-5">
+          <div className="text-sm font-semibold text-white/90 mb-2">Actual Outline</div>
+          <div className="rounded-2xl ring-4 ring-red-500 bg-white p-3 aspect-[4/3] flex items-center justify-center">
             <img
               src={outlineSrc}
               alt={`${stateName} outline`}
-              className="w-full h-full object-contain"
+              className="w-full h-full object-contain rounded-lg"
               onError={(e) => {
-                // optional fallback if a file is missing
                 (e.currentTarget as HTMLImageElement).src = '/outlines/_placeholder.png';
               }}
             />
@@ -77,12 +83,13 @@ const Results: React.FC<ResultsProps> = ({
         </div>
       </div>
 
-      <div className="mt-8">
+      {/* Next button */}
+      <div className="flex justify-center pt-2">
         <button
           onClick={onNext}
-          className="px-10 py-4 bg-cyan-600 text-white font-bold text-xl rounded-lg hover:bg-cyan-500 transition-colors duration-200 shadow-lg"
+          className="px-6 py-3 rounded-xl font-bold bg-red-500 text-white shadow-[0_12px_32px_rgba(239,68,68,.35)] hover:brightness-105 active:brightness-95 transition"
         >
-          {isLastInChallenge ? 'Finish Challenge' : 'Next State'}
+          {isLastInChallenge ? 'Finish Challenge' : 'Next State!'}
         </button>
       </div>
     </div>
