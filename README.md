@@ -1,20 +1,35 @@
-<div align="center">
-<img width="1200" height="475" alt="GHBanner" src="https://github.com/user-attachments/assets/0aa67016-6eaf-458a-adb2-6e31a0763ed6" />
-</div>
+# State Sketch Challenge 🎨🗺️  
 
-# Run and deploy your AI Studio app
+**State Sketch Challenge** is a web-based drawing game with a clean **blue and white theme** where you test your U.S. geography skills by sketching state outlines from memory.  
 
-This contains everything you need to run your app locally.
+👉 **[Play the Game Here](YOUR_LINK_HERE)** 👈  
 
-View your app in AI Studio: https://ai.studio/apps/drive/1hO4PgkZY5I607_xNmC8rnoMUc25HO6II
+---
 
-## Run Locally
+## 🎮 How to Play  
+1. Choose a mode from the **Main Menu**:  
+   - **Random State** → Guess one state at random.  
+   - **Pick a State** → Select a specific state to play.  
+   - **Try All 50** → Challenge yourself with every state in sequence.  
+2. On the **Game Screen**, you’ll be shown the **name of a state** and given a limited time to sketch it on the canvas.  
+3. When the timer ends, the **Results Screen** compares your sketch with the official **SVG reference outline** of that state.  
+   - A **lenient pixel comparison** gives you a percentage score for how close your drawing is.  
+   - See your sketch side-by-side with the real state outline.  
 
-**Prerequisites:**  Node.js
+---
 
+## 📂 Features  
+- Uses a folder of **SVG files** for all 50 U.S. states  
+- Timer-driven sketching challenge  
+- Friendly scoring system based on similarity  
+- Clean and simple blue-and-white UI  
 
-1. Install dependencies:
-   `npm install`
-2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
-3. Run the app:
-   `npm run dev`
+---
+
+## 🚀 Tech Stack  
+- **TypeScript**  
+- HTML & CSS  
+- Canvas drawing for sketches  
+- Pixel comparison algorithm (tolerant scoring)  
+
+---
