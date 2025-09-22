@@ -2,7 +2,7 @@
 
 **State Sketch Challenge** is a web-based drawing game with a clean **blue and white theme** where you test your U.S. geography skills by sketching state outlines from memory.  
 
-👉 **[Play the Game Here](YOUR_LINK_HERE)** 👈  
+👉 **[Play the Game Here]([https://statesketchr.hopto.org/])** 👈  
 
 ---
 
